@@ -182,6 +182,11 @@ func (d *Daemon) performFullSync() error {
 		slog.Error("Error cleaning up images", "error", err)
 	}
 
+	// Repair missing _index.md files for existing content (fixes older versions)
+	if err := d.repairMissingSectionIndexes(); err != nil {
+		slog.Error("Error repairing section indexes", "error", err)
+	}
+
 	// Save state
 	if err := d.stateManager.Save(); err != nil {
 		slog.Error("Error saving state", "error", err)
@@ -456,6 +461,62 @@ func (d *Daemon) ensureAllSectionIndexes(dir string) error {
 			}
 			slog.Info("Created section index", "path", indexPath)
 		}
+	}
+	
+	return nil
+}
+
+// repairMissingSectionIndexes scans Hugo content and creates missing _index.md files
+// This fixes installations that were created with older versions of the daemon
+func (d *Daemon) repairMissingSectionIndexes() error {
+	contentPath := filepath.Join(d.config.Repo, d.config.ContentDir)
+	
+	// Find all directories that contain .md files (but not _index.md files themselves)
+	contentDirs := make(map[string]bool)
+	
+	err := filepath.Walk(contentPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// Skip if this is the content root
+		if path == contentPath {
+			return nil
+		}
+		
+		// If this is a .md file (but not _index.md), mark its directory as needing an index
+		if !info.IsDir() && strings.HasSuffix(path, ".md") && !strings.HasSuffix(path, "_index.md") {
+			dir := filepath.Dir(path)
+			contentDirs[dir] = true
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return fmt.Errorf("scanning content directory: %w", err)
+	}
+	
+	// Create missing _index.md files for all content directories
+	created := 0
+	for dir := range contentDirs {
+		// Get relative path from repo root for ensureAllSectionIndexes
+		relDir, err := filepath.Rel(d.config.Repo, dir)
+		if err != nil {
+			slog.Error("Error calculating relative path", "dir", dir, "error", err)
+			continue
+		}
+		
+		// Ensure all parent directories have indexes
+		if err := d.ensureAllSectionIndexes(relDir); err != nil {
+			slog.Error("Error creating section indexes", "dir", relDir, "error", err)
+			continue
+		}
+		created++
+	}
+	
+	if created > 0 {
+		slog.Info("Repaired missing section indexes", "directories", len(contentDirs), "created", created)
 	}
 	
 	return nil
