@@ -190,7 +190,8 @@ func (d *Daemon) performFullSync() error {
 	}
 
 	// Repair orphaned Hugo files and broken links from previous buggy versions
-	if err := d.repairOrphanedHugoFiles(); err != nil {
+	// Pass the fresh publishedNotes to ensure we have current publish status
+	if err := d.repairOrphanedHugoFiles(publishedNotes); err != nil {
 		slog.Error("Error repairing orphaned Hugo files", "error", err)
 	}
 
@@ -590,15 +591,18 @@ func (d *Daemon) repairMissingSectionIndexes() error {
 
 // repairOrphanedHugoFiles scans Hugo content and removes orphaned files from previous buggy versions
 // This fixes files left behind from renames, duplicates, and broken links
-func (d *Daemon) repairOrphanedHugoFiles() error {
+func (d *Daemon) repairOrphanedHugoFiles(publishedNotes map[string]*vault.Note) error {
 	contentPath := filepath.Join(d.config.Repo, d.config.ContentDir)
 	
-	// Get all current note UIDs from vault state
-	validUIDs := make(map[string]string) // uid -> current_hugo_path
-	for uid, stateNote := range d.stateManager.GetAllNotes() {
-		if stateNote.Published {
-			validUIDs[uid] = stateNote.HugoPath
-		}
+	// Use fresh publishedNotes data (just parsed from vault) instead of potentially stale state
+	// Also get all notes from state for notes that exist but aren't published
+	allStateNotes := d.stateManager.GetAllNotes()
+	
+	// Build maps for current published notes (from fresh vault scan)
+	currentlyPublished := make(map[string]string) // uid -> hugo_path
+	for uid, note := range publishedNotes {
+		hugoPath := d.calculateHugoPath(note)
+		currentlyPublished[uid] = hugoPath
 	}
 	
 	// Scan all Hugo files and check for orphans/duplicates
@@ -639,17 +643,27 @@ func (d *Daemon) repairOrphanedHugoFiles() error {
 			return nil
 		}
 		
-		// Check if this UID is valid (note still exists in vault)
-		expectedPath, validUID := validUIDs[uid]
-		if !validUID {
-			// Orphaned file - note no longer exists in vault
-			orphanedFiles = append(orphanedFiles, relPath)
-		} else if expectedPath != relPath {
-			// Duplicate/wrong location - track for cleanup
-			if duplicateFiles[uid] == nil {
-				duplicateFiles[uid] = make([]string, 0)
+		// Check if this UID corresponds to a currently published note (from fresh vault scan)
+		expectedHugoPath, isCurrentlyPublished := currentlyPublished[uid]
+		
+		if !isCurrentlyPublished {
+			// Check if note exists in vault at all (might be unpublished)
+			if _, existsInVault := allStateNotes[uid]; !existsInVault {
+				// Truly orphaned file - note completely deleted from vault
+				orphanedFiles = append(orphanedFiles, relPath)
+			} else {
+				// Note exists in vault but is unpublished - should remove Hugo file
+				orphanedFiles = append(orphanedFiles, relPath)
 			}
-			duplicateFiles[uid] = append(duplicateFiles[uid], relPath)
+		} else {
+			// Note is currently published - check if Hugo file is in correct location
+			if expectedHugoPath != relPath {
+				// Duplicate/wrong location - track for cleanup
+				if duplicateFiles[uid] == nil {
+					duplicateFiles[uid] = make([]string, 0)
+				}
+				duplicateFiles[uid] = append(duplicateFiles[uid], relPath)
+			}
 		}
 		
 		return nil
@@ -679,7 +693,7 @@ func (d *Daemon) repairOrphanedHugoFiles() error {
 	
 	// Handle duplicates - keep the expected path, remove others
 	for uid, paths := range duplicateFiles {
-		expectedPath := validUIDs[uid]
+		expectedPath := currentlyPublished[uid]
 		for _, wrongPath := range paths {
 			if wrongPath != expectedPath {
 				fullPath := filepath.Join(d.config.Repo, wrongPath)

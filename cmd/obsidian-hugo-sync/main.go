@@ -23,7 +23,7 @@ func main() {
 	var (
 		vault           = flag.String("vault", "", "Path to Obsidian vault (required)")
 		repo            = flag.String("repo", "", "Path to Hugo site directory (required)")
-		contentDir      = flag.String("content-dir", "content/docs", "Target docs directory")
+		contentDir      = flag.String("content-dir", "content/docs", "Target directory for Hugo content (e.g., 'content', 'content/docs', 'content/blog')")
 		autoWeight      = flag.Bool("auto-weight", true, "Auto-assign weights to notes and folders")
 		linkFormat      = flag.String("link-format", "relref", "Link format: 'relref' or 'md'")
 		unpublishedLink = flag.String("unpublished-link", "text", "How to handle unpublished links: 'text' or 'hash'")

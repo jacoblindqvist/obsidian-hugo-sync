@@ -155,8 +155,8 @@ func TestGenerateIndexFile(t *testing.T) {
 		t.Error("Expected path to contain '_index.md'")
 	}
 	
-	if !strings.Contains(indexContent.Content, "# Guides") {
-		t.Error("Expected content to contain heading")
+	if indexContent.Content != "" {
+		t.Error("Expected content to be empty (front-matter only)")
 	}
 }
 

@@ -52,6 +52,12 @@ obsidian-hugo-sync \
   --repo /path/to/hugo/site \
   --dry-run
 
+# Place content in Hugo root (content/) instead of content/docs/
+obsidian-hugo-sync \
+  --vault /path/to/obsidian/vault \
+  --repo /path/to/hugo/site \
+  --content-dir "content"
+
 # Show help
 obsidian-hugo-sync --help
 ```
@@ -64,7 +70,7 @@ obsidian-hugo-sync --help
 |------|---------|-------------|
 | `--vault` | — | Path to Obsidian vault (required) |
 | `--repo` | — | Path to Hugo site directory (required) |
-| `--content-dir` | `content/docs` | Target docs directory in Hugo site |
+| `--content-dir` | `content/docs` | Target directory for Hugo content (e.g., `content`, `content/docs`, `content/blog`) |
 | `--auto-weight` | `true` | Auto-assign weights to notes and folders |
 | `--link-format` | `relref` | Link format: `relref` or `md` |
 | `--unpublished-link` | `text` | Handle unpublished links: `text` or `hash` |

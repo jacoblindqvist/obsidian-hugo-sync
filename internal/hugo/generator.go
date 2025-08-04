@@ -141,8 +141,15 @@ func (g *Generator) UpdateSlugMap(publishedNotes map[string]*vault.Note) {
 			filename := strings.TrimSuffix(filepath.Base(note.Path), ".md")
 			hugoPath := g.generateHugoPath(note.Path, note.UID)
 			
-			// Store relative path for Hugo relref
-			relPath := strings.TrimPrefix(hugoPath, g.contentDir+"/")
+			// Store relative path for Hugo relref (strip content/ but keep subdirs like docs/)
+			relPath := hugoPath
+			if strings.HasPrefix(relPath, "content/") {
+				relPath = strings.TrimPrefix(relPath, "content/")
+			} else if strings.HasPrefix(relPath, "content\\") {
+				relPath = strings.TrimPrefix(relPath, "content\\")
+			}
+			relPath = strings.ReplaceAll(relPath, "\\", "/")
+			relPath = g.convertToHugoURL(relPath)
 			relPath = strings.TrimSuffix(relPath, ".md")
 			
 			g.slugMap[filename] = relPath
@@ -221,17 +228,48 @@ func (g *Generator) createHugoLink(hugoPath, displayText string) string {
 		}
 		return fmt.Sprintf("[%s](%s)", displayText, url)
 	default: // "relref"
-		// Strip content directory prefix for relref (Hugo expects relative path from content root)
+		// Hugo relref expects path relative to content root (content/), not contentDir (content/docs)
+		// So we need to strip only "content/" prefix, keeping the docs/ part
 		relrefPath := hugoPath
-		if strings.HasPrefix(hugoPath, g.contentDir+"/") {
-			relrefPath = strings.TrimPrefix(hugoPath, g.contentDir+"/")
-		} else if strings.HasPrefix(hugoPath, g.contentDir+"\\") {
-			relrefPath = strings.TrimPrefix(hugoPath, g.contentDir+"\\")
+		
+		// Strip "content/" prefix if present (but keep subdirectories like "docs/")
+		if strings.HasPrefix(relrefPath, "content/") {
+			relrefPath = strings.TrimPrefix(relrefPath, "content/")
+		} else if strings.HasPrefix(relrefPath, "content\\") {
+			relrefPath = strings.TrimPrefix(relrefPath, "content\\")
 		}
+		
 		// Convert backslashes to forward slashes for Hugo
 		relrefPath = strings.ReplaceAll(relrefPath, "\\", "/")
+		
+		// Convert to Hugo URL format (lowercase, spaces to hyphens)
+		relrefPath = g.convertToHugoURL(relrefPath)
+		
 		return fmt.Sprintf("[%s]({{< relref \"%s\" >}})", displayText, relrefPath)
 	}
+}
+
+// convertToHugoURL converts a file path to Hugo's URL format (lowercase, spaces to hyphens)
+func (g *Generator) convertToHugoURL(path string) string {
+	// Split path into components
+	parts := strings.Split(path, "/")
+	
+	// Convert each part (except the final filename) to Hugo URL format
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			// Last part is filename, keep as-is (already slugified)
+			continue
+		}
+		
+		// Convert folder names to Hugo format: lowercase, spaces to hyphens
+		converted := strings.ToLower(part)
+		converted = strings.ReplaceAll(converted, " ", "-")
+		// Also handle other common characters
+		converted = strings.ReplaceAll(converted, "_", "-")
+		parts[i] = converted
+	}
+	
+	return strings.Join(parts, "/")
 }
 
 // protectCodeSections replaces code blocks, inline code, and markdown links with placeholders
@@ -334,7 +372,7 @@ func (g *Generator) GenerateIndexFile(dirPath string, weight int) *HugoContent {
 	return &HugoContent{
 		Path:        indexPath,
 		Title:       title,
-		Content:     fmt.Sprintf("# %s\n\nThis section contains documentation about %s.\n", title, strings.ToLower(title)),
+		Content:     "", // No content, just front-matter
 		Weight:      weight,
 		NoteUID:     "", // Index files don't have UIDs
 		LastUpdated: time.Now(),
