@@ -1,12 +1,12 @@
 # 📄 Obsidian → Hugo Sync Daemon
 
-**Autosave for your website**: Automatically sync your Obsidian notes to a Hugo Lotus-Docs site. Simply tag notes with `publish: true` or `#publish` and they appear on your public site. Remove the tag and they disappear. All changes queue in a draft branch for review before going live.
+**Autosave for your website**: Automatically sync your Obsidian notes to a Hugo Lotus-Docs site. Simply tag notes with `publish: true` or `#publish` and they appear in your Hugo content directory. Remove the tag and they disappear. You handle Git commits and pushes when ready.
 
 ## 🌟 Features
 
 - **Zero manual exporting** — One workspace (Obsidian) powers both private notes and public docs
 - **No broken links** — Wikilinks convert to Hugo links only when target notes are published
-- **Safety net** — All changes queue in a GitHub pull request for review
+- **Simple workflow** — Files copied to Hugo directory, you handle Git when ready
 - **Automatic cleanup** — Unpublish a note and its page (plus empty sections) vanishes automatically
 - **Process isolation** — Only one daemon instance per vault with PID file management
 - **Incremental sync** — Efficient change detection with content hashing and modification times
@@ -18,7 +18,7 @@
 ### Prerequisites
 
 - Go 1.21 or later
-- Git repository for your Hugo site
+- Hugo site directory
 - Obsidian vault with markdown files
 
 ### Installation
@@ -41,13 +41,12 @@ sudo mv obsidian-hugo-sync /usr/local/bin/
 # Start the daemon
 obsidian-hugo-sync \
   --vault /path/to/obsidian/vault \
-  --repo /path/to/hugo/repository \
-  --branch draft-content
+  --repo /path/to/hugo/site
 
 # Run in dry-run mode to preview changes
 obsidian-hugo-sync \
   --vault /path/to/obsidian/vault \
-  --repo /path/to/hugo/repository \
+  --repo /path/to/hugo/site \
   --dry-run
 
 # Show help
@@ -61,16 +60,14 @@ obsidian-hugo-sync --help
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vault` | — | Path to Obsidian vault (required) |
-| `--repo` | — | Path to Hugo repository clone (required) |
-| `--content-dir` | `content/docs` | Target docs directory in Hugo repo |
-| `--branch` | `draft-content` | Git branch for syncing changes |
+| `--repo` | — | Path to Hugo site directory (required) |
+| `--content-dir` | `content/docs` | Target docs directory in Hugo site |
 | `--auto-weight` | `true` | Auto-assign weights to notes and folders |
 | `--link-format` | `relref` | Link format: `relref` or `md` |
 | `--unpublished-link` | `text` | Handle unpublished links: `text` or `hash` |
 | `--interval` | `30s` | Scan interval when fsnotify unavailable |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `--dry-run` | `false` | Preview changes without committing |
-| `--git-token` | — | Git authentication token |
+| `--dry-run` | `false` | Preview changes without writing files |
 
 ### Configuration File
 
@@ -79,9 +76,8 @@ Create `~/.config/obsidian-hugo-sync/config.toml`:
 ```toml
 [default]
 vault = "/path/to/vault"
-repo = "/path/to/repo"
+repo = "/path/to/hugo/site"
 content_dir = "content/docs"
-branch = "draft-content"
 auto_weight = true
 link_format = "relref"
 log_level = "info"
@@ -89,9 +85,8 @@ log_level = "info"
 
 ### Environment Variables
 
-- `GIT_AUTH_TOKEN` — Git authentication token
 - `OBSIDIAN_VAULT` — Vault path (overridden by CLI flag)
-- `HUGO_REPO` — Repository path (overridden by CLI flag)
+- `HUGO_REPO` — Hugo site path (overridden by CLI flag)
 
 ## 📝 Publishing Notes
 
@@ -129,30 +124,25 @@ Root-level notes fall back to `content/docs/posts/`.
 | `[[Note\|Custom]]` | `[Custom]({{< relref "folder/note" >}})` | `[Custom](/docs/folder/note/)` |
 | `[[Unpublished]]` | `Unpublished` (plain text) | `Unpublished` (plain text) |
 
-## 🔧 Git Authentication
+## 🔧 Git Workflow
 
-The daemon supports multiple authentication methods:
+The daemon copies files to your Hugo directory - you handle Git operations manually:
 
-### SSH Key (Recommended)
 ```bash
-# Ensure your SSH key works
-ssh -T git@github.com
+# After daemon copies files to Hugo directory
+cd /path/to/hugo/site
 
-# Set custom key if needed
-export GIT_SSH_COMMAND="ssh -i /path/to/key"
+# Review changes
+git status
+git diff
+
+# Commit when ready
+git add .
+git commit -m "Updated documentation"
+git push origin main
 ```
 
-### Personal Access Token
-```bash
-# Via environment variable
-export GIT_AUTH_TOKEN="ghp_your_token_here"
-
-# Or via command line
-obsidian-hugo-sync --git-token "ghp_your_token_here" ...
-```
-
-### System Git Config
-If `git push` works in your shell, the daemon will inherit those credentials.
+This gives you full control over when and how changes are committed and deployed.
 
 ## 🖼️ Image Handling
 
@@ -186,7 +176,7 @@ Test your configuration without making changes:
 ```bash
 obsidian-hugo-sync --dry-run \
   --vault /path/to/vault \
-  --repo /path/to/repo
+  --repo /path/to/hugo/site
 ```
 
 ### State and Cache
@@ -248,13 +238,10 @@ ls /path/to/vault/.obsidian-hugo-sync.lock
 rm /path/to/vault/.obsidian-hugo-sync.lock
 ```
 
-**Git authentication failed:**
+**Hugo directory not found:**
 ```bash
-# Test SSH
-ssh -T git@github.com
-
-# Or check token
-curl -H "Authorization: token $GIT_AUTH_TOKEN" https://api.github.com/user
+# Check path exists and is readable
+ls -la /path/to/hugo/site
 ```
 
 **Vault not found:**
@@ -267,7 +254,7 @@ ls -la /path/to/vault
 ```bash
 # Check file permissions
 ls -la /path/to/vault
-ls -la /path/to/hugo/repo
+ls -la /path/to/hugo/site
 ```
 
 ### Error Categories
@@ -276,7 +263,7 @@ The daemon provides helpful error messages with suggestions:
 
 - **Configuration errors** — Check paths and settings
 - **Vault errors** — Verify markdown and YAML syntax
-- **Git errors** — Check authentication and network
+- **File system errors** — Check permissions and disk space
 - **Process errors** — Handle lock files and permissions
 
 ## 📊 Performance

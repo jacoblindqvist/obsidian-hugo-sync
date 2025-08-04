@@ -8,7 +8,7 @@ import (
 )
 
 func TestGenerateContent(t *testing.T) {
-	generator := NewGenerator("content/docs", "relref", "text")
+	generator := NewGenerator("/vault", "content/docs", "relref", "text")
 	
 	note := &vault.Note{
 		Path:    "/vault/guides/test.md",
@@ -37,7 +37,7 @@ func TestGenerateContent(t *testing.T) {
 }
 
 func TestCreateSlug(t *testing.T) {
-	generator := NewGenerator("content/docs", "relref", "text")
+	generator := NewGenerator("/vault", "content/docs", "relref", "text")
 	
 	tests := []struct {
 		filename string
@@ -61,7 +61,7 @@ func TestCreateSlug(t *testing.T) {
 }
 
 func TestProcessWikiLinks(t *testing.T) {
-	generator := NewGenerator("content/docs", "relref", "text")
+	generator := NewGenerator("/vault", "content/docs", "relref", "text")
 	
 	// Set up slug map for testing
 	generator.slugMap = map[string]string{
@@ -129,7 +129,7 @@ func TestCreateHugoLink(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.linkFormat, func(t *testing.T) {
-			generator := NewGenerator("content/docs", tt.linkFormat, "text")
+			generator := NewGenerator("/vault", "content/docs", tt.linkFormat, "text")
 			result := generator.createHugoLink(tt.hugoPath, tt.displayText)
 			if result != tt.expected {
 				t.Errorf("Expected '%s', got '%s'", tt.expected, result)
@@ -139,7 +139,7 @@ func TestCreateHugoLink(t *testing.T) {
 }
 
 func TestGenerateIndexFile(t *testing.T) {
-	generator := NewGenerator("content/docs", "relref", "text")
+	generator := NewGenerator("/vault", "content/docs", "relref", "text")
 	
 	indexContent := generator.GenerateIndexFile("content/docs/guides", 200)
 	

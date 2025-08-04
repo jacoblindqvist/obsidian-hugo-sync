@@ -22,17 +22,15 @@ var (
 func main() {
 	var (
 		vault           = flag.String("vault", "", "Path to Obsidian vault (required)")
-		repo            = flag.String("repo", "", "Path to Hugo repository clone (required)")
+		repo            = flag.String("repo", "", "Path to Hugo site directory (required)")
 		contentDir      = flag.String("content-dir", "content/docs", "Target docs directory")
-		branch          = flag.String("branch", "draft-content", "Git branch for syncing")
 		autoWeight      = flag.Bool("auto-weight", true, "Auto-assign weights to notes and folders")
 		linkFormat      = flag.String("link-format", "relref", "Link format: 'relref' or 'md'")
 		unpublishedLink = flag.String("unpublished-link", "text", "How to handle unpublished links: 'text' or 'hash'")
 		interval        = flag.String("interval", "30s", "Scan interval when fsnotify is unavailable")
 		logLevel        = flag.String("log-level", "info", "Log level: debug, info, warn, error")
-		dryRun          = flag.Bool("dry-run", false, "Preview changes without committing")
+		dryRun          = flag.Bool("dry-run", false, "Preview changes without writing files")
 		configFile      = flag.String("config", "", "Path to configuration file")
-		gitToken        = flag.String("git-token", "", "Git authentication token")
 		showVersion     = flag.Bool("version", false, "Show version information")
 	)
 
@@ -59,7 +57,6 @@ func main() {
 		Vault:           *vault,
 		Repo:            *repo,
 		ContentDir:      *contentDir,
-		Branch:          *branch,
 		AutoWeight:      *autoWeight,
 		LinkFormat:      *linkFormat,
 		UnpublishedLink: *unpublishedLink,
@@ -67,7 +64,6 @@ func main() {
 		LogLevel:        *logLevel,
 		DryRun:          *dryRun,
 		ConfigFile:      *configFile,
-		GitToken:        *gitToken,
 	})
 	if err != nil {
 		slog.Error("Failed to load configuration", "error", err)
@@ -77,8 +73,7 @@ func main() {
 	slog.Info("Starting Obsidian → Hugo Sync Daemon",
 		"version", version,
 		"vault", cfg.Vault,
-		"repo", cfg.Repo,
-		"branch", cfg.Branch,
+		"hugo_dir", cfg.Repo,
 		"dry_run", cfg.DryRun,
 	)
 

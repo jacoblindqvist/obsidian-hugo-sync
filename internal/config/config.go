@@ -15,7 +15,6 @@ type Config struct {
 	Vault      string `toml:"vault"`
 	Repo       string `toml:"repo"`
 	ContentDir string `toml:"content_dir"`
-	Branch     string `toml:"branch"`
 
 	// Behavior settings
 	AutoWeight      bool   `toml:"auto_weight"`
@@ -30,9 +29,6 @@ type Config struct {
 	LogLevel string `toml:"log_level"`
 	DryRun   bool   `toml:"dry_run"`
 
-	// Authentication
-	GitToken string `toml:"-"` // Never store in config file
-
 	// Internal paths (computed)
 	CacheDir   string `toml:"-"`
 	ConfigFile string `toml:"-"`
@@ -43,7 +39,6 @@ type Options struct {
 	Vault           string
 	Repo            string
 	ContentDir      string
-	Branch          string
 	AutoWeight      bool
 	LinkFormat      string
 	UnpublishedLink string
@@ -51,7 +46,6 @@ type Options struct {
 	LogLevel        string
 	DryRun          bool
 	ConfigFile      string
-	GitToken        string
 }
 
 // Load creates a Config by merging CLI flags, config file, and environment variables
@@ -59,7 +53,6 @@ func Load(opts *Options) (*Config, error) {
 	cfg := &Config{
 		// Set defaults
 		ContentDir:      "content/docs",
-		Branch:          "draft-content",
 		AutoWeight:      true,
 		LinkFormat:      "relref",
 		UnpublishedLink: "text",
@@ -112,7 +105,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("vault path is required")
 	}
 	if c.Repo == "" {
-		return fmt.Errorf("repository path is required")
+		return fmt.Errorf("hugo directory path is required")
 	}
 
 	// Check that vault exists
@@ -122,11 +115,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("vault path %q is not a directory", c.Vault)
 	}
 
-	// Check that repo exists
+	// Check that hugo directory exists
 	if stat, err := os.Stat(c.Repo); err != nil {
-		return fmt.Errorf("repository path %q: %w", c.Repo, err)
+		return fmt.Errorf("hugo directory path %q: %w", c.Repo, err)
 	} else if !stat.IsDir() {
-		return fmt.Errorf("repository path %q is not a directory", c.Repo)
+		return fmt.Errorf("hugo directory path %q is not a directory", c.Repo)
 	}
 
 	// Validate link format
@@ -197,9 +190,6 @@ func applyOverrides(cfg *Config, opts *Options) error {
 	if opts.ContentDir != "" {
 		cfg.ContentDir = opts.ContentDir
 	}
-	if opts.Branch != "" {
-		cfg.Branch = opts.Branch
-	}
 	if opts.LinkFormat != "" {
 		cfg.LinkFormat = opts.LinkFormat
 	}
@@ -214,13 +204,6 @@ func applyOverrides(cfg *Config, opts *Options) error {
 	}
 	if opts.DryRun {
 		cfg.DryRun = opts.DryRun
-	}
-
-	// Git token from CLI flag or environment
-	if opts.GitToken != "" {
-		cfg.GitToken = opts.GitToken
-	} else if token := os.Getenv("GIT_AUTH_TOKEN"); token != "" {
-		cfg.GitToken = token
 	}
 
 	// Check for environment variable overrides

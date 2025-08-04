@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"obsidian-hugo-sync/internal/config"
-	"obsidian-hugo-sync/internal/git"
 	"obsidian-hugo-sync/internal/hugo"
 	"obsidian-hugo-sync/internal/images"
 	"obsidian-hugo-sync/internal/state"
@@ -22,7 +21,6 @@ import (
 type Daemon struct {
 	config       *config.Config
 	stateManager *state.Manager
-	gitRepo      *git.Repository
 	hugoGen      *hugo.Generator
 	imageManager *images.Manager
 	watcher      *watcher.Watcher
@@ -40,14 +38,10 @@ func New(cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("creating state manager: %w", err)
 	}
 
-	// Initialize Git repository
-	gitRepo, err := git.NewRepository(cfg.Repo, cfg.Branch, cfg.GitToken, cfg.DryRun)
-	if err != nil {
-		return nil, fmt.Errorf("initializing git repository: %w", err)
-	}
+	// No Git repository needed - just copy files to Hugo directory
 
 	// Initialize Hugo generator
-	hugoGen := hugo.NewGenerator(cfg.ContentDir, cfg.LinkFormat, cfg.UnpublishedLink)
+	hugoGen := hugo.NewGenerator(cfg.Vault, cfg.ContentDir, cfg.LinkFormat, cfg.UnpublishedLink)
 
 	// Initialize image manager
 	imageManager := images.NewManager(cfg.Vault, cfg.Repo, cfg.ContentDir, cfg.DryRun)
@@ -61,7 +55,6 @@ func New(cfg *config.Config) (*Daemon, error) {
 	return &Daemon{
 		config:       cfg,
 		stateManager: stateManager,
-		gitRepo:      gitRepo,
 		hugoGen:      hugoGen,
 		imageManager: imageManager,
 		watcher:      fileWatcher,
@@ -73,12 +66,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	d.isRunning = true
 	defer func() { d.isRunning = false }()
 
-	slog.Info("Starting daemon", "vault", d.config.Vault, "repo", d.config.Repo)
-
-	// Ensure Git branch exists
-	if err := d.gitRepo.EnsureBranch(); err != nil {
-		return fmt.Errorf("ensuring git branch: %w", err)
-	}
+	slog.Info("Starting daemon", "vault", d.config.Vault, "hugo_dir", d.config.Repo)
 
 	// Perform initial full sync
 	if err := d.performFullSync(); err != nil {
@@ -192,11 +180,6 @@ func (d *Daemon) performFullSync() error {
 		slog.Error("Error cleaning up images", "error", err)
 	}
 
-	// Commit and push changes
-	if err := d.commitAndPush(); err != nil {
-		return fmt.Errorf("committing changes: %w", err)
-	}
-
 	// Save state
 	if err := d.stateManager.Save(); err != nil {
 		slog.Error("Error saving state", "error", err)
@@ -218,16 +201,9 @@ func (d *Daemon) performFullSync() error {
 func (d *Daemon) performIncrementalSync() error {
 	slog.Debug("Performing incremental sync")
 
-	// Check for any uncommitted changes in Git
-	hasChanges, err := d.gitRepo.HasChanges()
-	if err != nil {
-		return fmt.Errorf("checking git changes: %w", err)
-	}
-
-	if hasChanges {
-		if err := d.commitAndPush(); err != nil {
-			return fmt.Errorf("committing pending changes: %w", err)
-		}
+	// Just save state - no Git operations
+	if err := d.stateManager.Save(); err != nil {
+		slog.Error("Error saving state", "error", err)
 	}
 
 	return nil
@@ -303,9 +279,18 @@ func (d *Daemon) publishNote(note *vault.Note) error {
 		return fmt.Errorf("generating hugo content: %w", err)
 	}
 
-	// Write to Hugo repository
-	if err := d.gitRepo.WriteFile(hugoContent.Path, hugoContent.Serialize()); err != nil {
-		return fmt.Errorf("writing hugo file: %w", err)
+	// Write to Hugo directory
+	fullPath := filepath.Join(d.config.Repo, hugoContent.Path)
+	if d.config.DryRun {
+		slog.Info("DRY RUN: Would write Hugo file", "path", hugoContent.Path)
+	} else {
+		// Ensure directory exists
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			return fmt.Errorf("creating directory: %w", err)
+		}
+		if err := os.WriteFile(fullPath, []byte(hugoContent.Serialize()), 0644); err != nil {
+			return fmt.Errorf("writing hugo file: %w", err)
+		}
 	}
 
 	// Process images
@@ -325,10 +310,21 @@ func (d *Daemon) publishNote(note *vault.Note) error {
 // unpublishNote removes a note from the Hugo repository
 func (d *Daemon) unpublishNote(note *vault.Note) error {
 	hugoPath := d.calculateHugoPath(note)
+	fullPath := filepath.Join(d.config.Repo, hugoPath)
 	
-	// Remove from Hugo repository
-	if err := d.gitRepo.DeleteFile(hugoPath); err != nil {
-		return fmt.Errorf("deleting hugo file: %w", err)
+	// Remove from Hugo directory (only if it exists)
+	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		// File doesn't exist, nothing to do
+		slog.Debug("Hugo file doesn't exist, skipping deletion", "path", hugoPath)
+	} else if d.config.DryRun {
+		slog.Info("DRY RUN: Would delete Hugo file", "path", hugoPath)
+	} else {
+		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("deleting hugo file: %w", err)
+		}
+		// Remove empty directories
+		d.removeEmptyDirs(filepath.Dir(fullPath))
+		slog.Info("Deleted Hugo file", "path", hugoPath)
 	}
 
 	// Remove image references
@@ -345,8 +341,11 @@ func (d *Daemon) handleNoteRemoval(notePath string) error {
 		if stateNote.SourcePath == notePath {
 			// Remove from Hugo if it was published
 			if stateNote.Published {
-				if err := d.gitRepo.DeleteFile(stateNote.HugoPath); err != nil {
+				fullPath := filepath.Join(d.config.Repo, stateNote.HugoPath)
+				if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 					slog.Error("Error removing deleted note from Hugo", "path", stateNote.HugoPath, "error", err)
+				} else {
+					d.removeEmptyDirs(filepath.Dir(fullPath))
 				}
 			}
 			
@@ -420,32 +419,51 @@ func (d *Daemon) ensureSectionIndex(notePath string) error {
 	}
 	
 	indexPath := filepath.Join(dir, "_index.md")
+	fullIndexPath := filepath.Join(d.config.Repo, indexPath)
 	
 	// Check if index already exists
-	status, err := d.gitRepo.GetStatus()
-	if err != nil {
-		return err
-	}
-	
-	// If index doesn't exist in git, create it
-	found := false
-	for path := range status {
-		if path == indexPath {
-			found = true
-			break
-		}
-	}
-	
-	if !found {
+	if _, err := os.Stat(fullIndexPath); os.IsNotExist(err) {
+		// Create index file
 		weight := hugo.CalculateFolderWeight(dir)
 		indexContent := d.hugoGen.GenerateIndexFile(dir, weight)
 		
-		if err := d.gitRepo.WriteFile(indexContent.Path, indexContent.Serialize()); err != nil {
-			return fmt.Errorf("creating section index: %w", err)
+		if d.config.DryRun {
+			slog.Info("DRY RUN: Would create section index", "path", indexContent.Path)
+		} else {
+			// Ensure directory exists
+			if err := os.MkdirAll(filepath.Dir(fullIndexPath), 0755); err != nil {
+				return fmt.Errorf("creating index directory: %w", err)
+			}
+			if err := os.WriteFile(fullIndexPath, []byte(indexContent.Serialize()), 0644); err != nil {
+				return fmt.Errorf("creating section index: %w", err)
+			}
 		}
 	}
 	
 	return nil
+}
+
+// removeEmptyDirs recursively removes empty directories
+func (d *Daemon) removeEmptyDirs(dir string) {
+	// Don't remove the Hugo repository root or content directory
+	hugoContentDir := filepath.Join(d.config.Repo, d.config.ContentDir)
+	if dir == d.config.Repo || dir == hugoContentDir {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) > 0 {
+		return // Directory not empty or error reading
+	}
+
+	// Directory is empty, remove it
+	if err := os.Remove(dir); err == nil {
+		// Recursively check parent directory
+		parent := filepath.Dir(dir)
+		if parent != dir { // Avoid infinite loop
+			d.removeEmptyDirs(parent)
+		}
+	}
 }
 
 func (d *Daemon) regeneratePublishedContent(publishedNotes map[string]*vault.Note) error {
@@ -467,8 +485,17 @@ func (d *Daemon) regeneratePublishedContent(publishedNotes map[string]*vault.Not
 			return fmt.Errorf("regenerating content for %s: %w", note.Path, err)
 		}
 		
-		if err := d.gitRepo.WriteFile(hugoContent.Path, hugoContent.Serialize()); err != nil {
-			return fmt.Errorf("writing regenerated content: %w", err)
+		fullPath := filepath.Join(d.config.Repo, hugoContent.Path)
+		if d.config.DryRun {
+			slog.Info("DRY RUN: Would regenerate Hugo file", "path", hugoContent.Path)
+		} else {
+			// Ensure directory exists
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				return fmt.Errorf("creating directory for regenerated content: %w", err)
+			}
+			if err := os.WriteFile(fullPath, []byte(hugoContent.Serialize()), 0644); err != nil {
+				return fmt.Errorf("writing regenerated content: %w", err)
+			}
 		}
 	}
 	
@@ -480,38 +507,4 @@ func (d *Daemon) cleanupImages() error {
 	return d.imageManager.CleanupUnusedImages(allImages)
 }
 
-func (d *Daemon) commitAndPush() error {
-	// Create commit message
-	status, err := d.gitRepo.GetStatus()
-	if err != nil {
-		return err
-	}
-	
-	if len(status) == 0 {
-		return nil // No changes
-	}
-	
-	var added, modified, deleted int
-	for _, statusCode := range status {
-		switch statusCode {
-		case 65: // Added
-			added++
-		case 77: // Modified  
-			modified++
-		case 68: // Deleted
-			deleted++
-		}
-	}
-	
-	message := git.CreateCommitMessage(added, modified, deleted)
-	
-	if err := d.gitRepo.CommitChanges(message); err != nil {
-		return fmt.Errorf("committing: %w", err)
-	}
-	
-	if err := d.gitRepo.Push(); err != nil {
-		return fmt.Errorf("pushing: %w", err)
-	}
-	
-	return nil
-} 
+// No longer needed - user handles Git operations manually 

@@ -12,6 +12,7 @@ import (
 
 // Generator handles conversion from Obsidian notes to Hugo format
 type Generator struct {
+	vaultPath       string
 	contentDir      string
 	linkFormat      string
 	unpublishedLink string
@@ -19,8 +20,9 @@ type Generator struct {
 }
 
 // NewGenerator creates a new Hugo content generator
-func NewGenerator(contentDir, linkFormat, unpublishedLink string) *Generator {
+func NewGenerator(vaultPath, contentDir, linkFormat, unpublishedLink string) *Generator {
 	return &Generator{
+		vaultPath:       vaultPath,
 		contentDir:      contentDir,
 		linkFormat:      linkFormat,
 		unpublishedLink: unpublishedLink,
@@ -73,9 +75,13 @@ func (hc *HugoContent) Serialize() string {
 }
 
 // generateHugoPath creates the Hugo content path for a note
-func (g *Generator) generateHugoPath(vaultPath, noteUID string) string {
-	// Remove vault root to get relative path
-	relPath := filepath.Clean(vaultPath)
+func (g *Generator) generateHugoPath(notePath, noteUID string) string {
+	// Get relative path from vault root
+	relPath, err := filepath.Rel(g.vaultPath, notePath)
+	if err != nil {
+		// Fallback to using the full path if relative calculation fails
+		relPath = filepath.Clean(notePath)
+	}
 	
 	// Convert to Hugo path structure
 	dir := filepath.Dir(relPath)
