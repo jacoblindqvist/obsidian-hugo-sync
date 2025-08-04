@@ -11,6 +11,7 @@ import (
 	"obsidian-hugo-sync/internal/state"
 	"obsidian-hugo-sync/internal/vault"
 	"obsidian-hugo-sync/internal/watcher"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -384,7 +385,8 @@ func (d *Daemon) writeNoteToVault(note *vault.Note) error {
 		return nil
 	}
 	
-	return d.gitRepo.WriteFile(note.Path, string(content))
+	// Write directly to vault file system, NOT to git repo
+	return os.WriteFile(note.Path, content, 0644)
 }
 
 func (d *Daemon) processNoteImages(note *vault.Note) error {
