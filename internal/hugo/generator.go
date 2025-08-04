@@ -17,16 +17,18 @@ type Generator struct {
 	linkFormat      string
 	unpublishedLink string
 	slugMap         map[string]string // target -> hugo_path for link resolution
+	protectedContent map[string]string // placeholder -> original content for restoration
 }
 
 // NewGenerator creates a new Hugo content generator
 func NewGenerator(vaultPath, contentDir, linkFormat, unpublishedLink string) *Generator {
 	return &Generator{
-		vaultPath:       vaultPath,
-		contentDir:      contentDir,
-		linkFormat:      linkFormat,
-		unpublishedLink: unpublishedLink,
-		slugMap:         make(map[string]string),
+		vaultPath:        vaultPath,
+		contentDir:       contentDir,
+		linkFormat:       linkFormat,
+		unpublishedLink:  unpublishedLink,
+		slugMap:          make(map[string]string),
+		protectedContent: make(map[string]string),
 	}
 }
 
@@ -36,6 +38,9 @@ func (g *Generator) GenerateContent(note *vault.Note, weight int) (*HugoContent,
 	
 	// Process wikilinks in content
 	processedContent := g.processWikiLinks(note.Content)
+	
+	// Escape Hugo shortcodes with placeholder text
+	processedContent = g.escapeExampleShortcodes(processedContent)
 	
 	content := &HugoContent{
 		Path:        hugoPath,
@@ -216,22 +221,42 @@ func (g *Generator) createHugoLink(hugoPath, displayText string) string {
 		}
 		return fmt.Sprintf("[%s](%s)", displayText, url)
 	default: // "relref"
-		return fmt.Sprintf("[%s]({{< relref \"%s\" >}})", displayText, hugoPath)
+		// Strip content directory prefix for relref (Hugo expects relative path from content root)
+		relrefPath := hugoPath
+		if strings.HasPrefix(hugoPath, g.contentDir+"/") {
+			relrefPath = strings.TrimPrefix(hugoPath, g.contentDir+"/")
+		} else if strings.HasPrefix(hugoPath, g.contentDir+"\\") {
+			relrefPath = strings.TrimPrefix(hugoPath, g.contentDir+"\\")
+		}
+		// Convert backslashes to forward slashes for Hugo
+		relrefPath = strings.ReplaceAll(relrefPath, "\\", "/")
+		return fmt.Sprintf("[%s]({{< relref \"%s\" >}})", displayText, relrefPath)
 	}
 }
 
-// protectCodeSections replaces code blocks and inline code with placeholders
+// protectCodeSections replaces code blocks, inline code, and markdown links with placeholders
 func (g *Generator) protectCodeSections(content string) string {
-	// This is a simplified implementation
-	// In practice, you'd want more sophisticated code block detection
+	// Clear previous protected content
+	g.protectedContent = make(map[string]string)
+	protected := content
+	
+	// Protect markdown links first (to avoid processing wikilinks inside them)
+	markdownLinkRegex := regexp.MustCompile(`\[([^\]]*)\]\(([^)]*)\)`)
+	markdownLinks := markdownLinkRegex.FindAllString(protected, -1)
+	
+	for i, link := range markdownLinks {
+		placeholder := fmt.Sprintf("__MARKDOWN_LINK_%d__", i)
+		g.protectedContent[placeholder] = link
+		protected = strings.Replace(protected, link, placeholder, 1)
+	}
 	
 	// Protect code blocks
 	codeBlockRegex := regexp.MustCompile("(?s)```[^`]*```")
-	codeBlocks := codeBlockRegex.FindAllString(content, -1)
+	codeBlocks := codeBlockRegex.FindAllString(protected, -1)
 	
-	protected := content
 	for i, block := range codeBlocks {
 		placeholder := fmt.Sprintf("__CODE_BLOCK_%d__", i)
+		g.protectedContent[placeholder] = block
 		protected = strings.Replace(protected, block, placeholder, 1)
 	}
 	
@@ -241,17 +266,60 @@ func (g *Generator) protectCodeSections(content string) string {
 	
 	for i, code := range inlineCodes {
 		placeholder := fmt.Sprintf("__INLINE_CODE_%d__", i)
+		g.protectedContent[placeholder] = code
 		protected = strings.Replace(protected, code, placeholder, 1)
 	}
 	
 	return protected
 }
 
-// restoreCodeSections restores code blocks and inline code from placeholders
+// restoreCodeSections restores code blocks, inline code, and markdown links from placeholders
 func (g *Generator) restoreCodeSections(content string) string {
-	// This would restore the protected sections
-	// Implementation depends on how protectCodeSections was implemented
-	return content
+	restored := content
+	
+	// Restore all protected content
+	for placeholder, original := range g.protectedContent {
+		restored = strings.Replace(restored, placeholder, original, -1)
+	}
+	
+	return restored
+}
+
+// escapeExampleShortcodes escapes Hugo shortcodes that contain placeholder/example text
+func (g *Generator) escapeExampleShortcodes(content string) string {
+	// Pattern to match Hugo shortcodes like {{< relref "path" >}}
+	shortcodeRegex := regexp.MustCompile(`\{\{<\s*(\w+)\s+"([^"]+)"\s*>\}\}`)
+	
+	// Common placeholder patterns that should be escaped
+	placeholderPatterns := []string{
+		"folder/slug",
+		"folder/note", 
+		"path",
+		"folder/path",
+		"docs/path",
+	}
+	
+	return shortcodeRegex.ReplaceAllStringFunc(content, func(match string) string {
+		// Extract the path from the shortcode
+		matches := shortcodeRegex.FindStringSubmatch(match)
+		if len(matches) < 3 {
+			return match
+		}
+		
+		shortcodeType := matches[1]
+		path := matches[2]
+		
+		// Check if this looks like a placeholder/example
+		for _, placeholder := range placeholderPatterns {
+			if path == placeholder {
+				// Escape the shortcode so Hugo displays it as literal text
+				return fmt.Sprintf("{{</* %s \"%s\" */>}}", shortcodeType, path)
+			}
+		}
+		
+		// Not a placeholder, leave unchanged
+		return match
+	})
 }
 
 // GenerateIndexFile creates an _index.md file for a directory
