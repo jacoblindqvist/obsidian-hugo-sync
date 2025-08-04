@@ -12,6 +12,7 @@ import (
 	"obsidian-hugo-sync/internal/watcher"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,8 +27,9 @@ type Daemon struct {
 	watcher      *watcher.Watcher
 	
 	// Internal state
-	isRunning bool
-	lastSync  time.Time
+	isRunning       bool
+	lastSync        time.Time
+	needsLinkUpdate bool
 }
 
 // New creates a new daemon instance
@@ -187,6 +189,11 @@ func (d *Daemon) performFullSync() error {
 		slog.Error("Error repairing section indexes", "error", err)
 	}
 
+	// Repair orphaned Hugo files and broken links from previous buggy versions
+	if err := d.repairOrphanedHugoFiles(); err != nil {
+		slog.Error("Error repairing orphaned Hugo files", "error", err)
+	}
+
 	// Save state
 	if err := d.stateManager.Save(); err != nil {
 		slog.Error("Error saving state", "error", err)
@@ -208,7 +215,35 @@ func (d *Daemon) performFullSync() error {
 func (d *Daemon) performIncrementalSync() error {
 	slog.Debug("Performing incremental sync")
 
-	// Just save state - no Git operations
+	// Check if we need to regenerate content due to link updates (file renames)
+	if d.needsLinkUpdate {
+		slog.Info("Regenerating all published content due to file renames")
+		
+		// Get all published notes
+		publishedNotes := make(map[string]*vault.Note)
+		for uid, stateNote := range d.stateManager.GetAllNotes() {
+			if stateNote.Published {
+				note, err := vault.ParseNote(stateNote.SourcePath)
+				if err != nil {
+					slog.Error("Error parsing note for link update", "path", stateNote.SourcePath, "error", err)
+					continue
+				}
+				publishedNotes[uid] = note
+			}
+		}
+		
+		// Update slug map and regenerate all published content
+		d.hugoGen.UpdateSlugMap(publishedNotes)
+		if err := d.regeneratePublishedContent(publishedNotes); err != nil {
+			slog.Error("Error regenerating published content", "error", err)
+		} else {
+			slog.Info("Successfully updated all links after file renames")
+		}
+		
+		d.needsLinkUpdate = false
+	}
+
+	// Save state
 	if err := d.stateManager.Save(); err != nil {
 		slog.Error("Error saving state", "error", err)
 	}
@@ -233,6 +268,10 @@ func (d *Daemon) processNote(notePath string) (*vault.Note, error) {
 	if !d.stateManager.NeedsSync(note.UID, notePath, note.ModTime, contentHash) && !uidChanged {
 		return note, nil // No changes
 	}
+
+	// Check if this is a file rename (path changed but UID exists)
+	oldNote := d.stateManager.GetNote(note.UID)
+	isRenamed := oldNote != nil && oldNote.SourcePath != notePath
 
 	// Update front-matter if needed
 	var frontMatterChanged bool
@@ -259,6 +298,33 @@ func (d *Daemon) processNote(notePath string) (*vault.Note, error) {
 	} else {
 		if err := d.unpublishNote(note); err != nil {
 			return nil, fmt.Errorf("unpublishing note: %w", err)
+		}
+	}
+
+	// Handle file rename cleanup
+	if isRenamed && oldNote.Published {
+		// Remove old Hugo file
+		oldHugoPath := oldNote.HugoPath
+		oldFullPath := filepath.Join(d.config.Repo, oldHugoPath)
+		
+		if _, err := os.Stat(oldFullPath); err == nil {
+			if d.config.DryRun {
+				slog.Info("DRY RUN: Would delete old Hugo file after rename", "old_path", oldHugoPath, "new_path", d.calculateHugoPath(note))
+			} else {
+				if err := os.Remove(oldFullPath); err != nil {
+					slog.Error("Error removing old Hugo file after rename", "path", oldHugoPath, "error", err)
+				} else {
+					slog.Info("Removed old Hugo file after rename", "old_path", oldHugoPath, "new_path", d.calculateHugoPath(note))
+					d.removeEmptyDirs(filepath.Dir(oldFullPath))
+				}
+			}
+		}
+		
+		// Schedule regeneration of all published content to update links
+		if note.Published {
+			slog.Info("File renamed, will regenerate all published content to update links", "old_path", oldNote.SourcePath, "new_path", notePath)
+			// Mark that we need to regenerate all content during next incremental sync
+			d.needsLinkUpdate = true
 		}
 	}
 
@@ -520,6 +586,172 @@ func (d *Daemon) repairMissingSectionIndexes() error {
 	}
 	
 	return nil
+}
+
+// repairOrphanedHugoFiles scans Hugo content and removes orphaned files from previous buggy versions
+// This fixes files left behind from renames, duplicates, and broken links
+func (d *Daemon) repairOrphanedHugoFiles() error {
+	contentPath := filepath.Join(d.config.Repo, d.config.ContentDir)
+	
+	// Get all current note UIDs from vault state
+	validUIDs := make(map[string]string) // uid -> current_hugo_path
+	for uid, stateNote := range d.stateManager.GetAllNotes() {
+		if stateNote.Published {
+			validUIDs[uid] = stateNote.HugoPath
+		}
+	}
+	
+	// Scan all Hugo files and check for orphans/duplicates
+	orphanedFiles := make([]string, 0)
+	duplicateFiles := make(map[string][]string) // uid -> []file_paths
+	
+	err := filepath.Walk(contentPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// Skip directories and _index.md files
+		if info.IsDir() || strings.HasSuffix(path, "_index.md") {
+			return nil
+		}
+		
+		// Only process .md files
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		
+		// Extract noteUid from file front-matter
+		uid, err := d.extractNoteUidFromHugoFile(path)
+		if err != nil {
+			slog.Error("Error reading Hugo file for repair", "path", path, "error", err)
+			return nil // Continue scanning
+		}
+		
+		if uid == "" {
+			// File has no noteUid, might be manually created - leave it alone
+			return nil
+		}
+		
+		// Get relative path from repo root
+		relPath, err := filepath.Rel(d.config.Repo, path)
+		if err != nil {
+			slog.Error("Error calculating relative path", "path", path, "error", err)
+			return nil
+		}
+		
+		// Check if this UID is valid (note still exists in vault)
+		expectedPath, validUID := validUIDs[uid]
+		if !validUID {
+			// Orphaned file - note no longer exists in vault
+			orphanedFiles = append(orphanedFiles, relPath)
+		} else if expectedPath != relPath {
+			// Duplicate/wrong location - track for cleanup
+			if duplicateFiles[uid] == nil {
+				duplicateFiles[uid] = make([]string, 0)
+			}
+			duplicateFiles[uid] = append(duplicateFiles[uid], relPath)
+		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return fmt.Errorf("scanning Hugo content for repair: %w", err)
+	}
+	
+	// Remove orphaned files
+	removed := 0
+	for _, orphanPath := range orphanedFiles {
+		fullPath := filepath.Join(d.config.Repo, orphanPath)
+		
+		if d.config.DryRun {
+			slog.Info("DRY RUN: Would remove orphaned Hugo file", "path", orphanPath)
+		} else {
+			if err := os.Remove(fullPath); err != nil {
+				slog.Error("Error removing orphaned Hugo file", "path", orphanPath, "error", err)
+			} else {
+				slog.Info("Removed orphaned Hugo file", "path", orphanPath)
+				d.removeEmptyDirs(filepath.Dir(fullPath))
+				removed++
+			}
+		}
+	}
+	
+	// Handle duplicates - keep the expected path, remove others
+	for uid, paths := range duplicateFiles {
+		expectedPath := validUIDs[uid]
+		for _, wrongPath := range paths {
+			if wrongPath != expectedPath {
+				fullPath := filepath.Join(d.config.Repo, wrongPath)
+				
+				if d.config.DryRun {
+					slog.Info("DRY RUN: Would remove duplicate Hugo file", "path", wrongPath, "correct_path", expectedPath, "uid", uid)
+				} else {
+					if err := os.Remove(fullPath); err != nil {
+						slog.Error("Error removing duplicate Hugo file", "path", wrongPath, "error", err)
+					} else {
+						slog.Info("Removed duplicate Hugo file", "path", wrongPath, "correct_path", expectedPath, "uid", uid)
+						d.removeEmptyDirs(filepath.Dir(fullPath))
+						removed++
+					}
+				}
+			}
+		}
+	}
+	
+	if removed > 0 || len(orphanedFiles) > 0 || len(duplicateFiles) > 0 {
+		slog.Info("Repaired Hugo content", 
+			"orphaned_files", len(orphanedFiles), 
+			"duplicate_groups", len(duplicateFiles), 
+			"files_removed", removed)
+		
+		// Force regeneration of all content to fix any remaining broken links
+		d.needsLinkUpdate = true
+	}
+	
+	return nil
+}
+
+// extractNoteUidFromHugoFile reads a Hugo file and extracts the noteUid from front-matter
+func (d *Daemon) extractNoteUidFromHugoFile(filePath string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	
+	content := string(data)
+	
+	// Check for front-matter
+	if !strings.HasPrefix(content, "---\n") {
+		return "", nil // No front-matter
+	}
+	
+	// Find end of front-matter
+	lines := strings.Split(content, "\n")
+	endIndex := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			endIndex = i
+			break
+		}
+	}
+	
+	if endIndex <= 0 {
+		return "", nil // Malformed front-matter
+	}
+	
+	// Parse front-matter to extract noteUid
+	frontMatterContent := strings.Join(lines[1:endIndex], "\n")
+	
+	// Simple regex to extract noteUid (more robust than full YAML parsing)
+	noteUidRegex := regexp.MustCompile(`(?m)^noteUid:\s*(.+)$`)
+	matches := noteUidRegex.FindStringSubmatch(frontMatterContent)
+	
+	if len(matches) > 1 {
+		return strings.TrimSpace(matches[1]), nil
+	}
+	
+	return "", nil
 }
 
 // removeEmptyDirs recursively removes empty directories
