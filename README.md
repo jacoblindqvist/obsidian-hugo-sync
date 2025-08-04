@@ -1,6 +1,9 @@
 # 📄 Obsidian → Hugo Sync Daemon
 
-**Autosave for your website**: Automatically sync your Obsidian notes to a Hugo Lotus-Docs site. Simply tag notes with `publish: true` or `#publish` and they appear in your Hugo content directory. Remove the tag and they disappear. You handle Git commits and pushes when ready.
+> **⚠️ Disclaimer:** This project was "vibe coded" and has not undergone a formal code review. Use at your own risk!
+
+
+**Autosave for your website**: Automatically sync your Obsidian notes to a Hugo site. Simply tag notes with `publish: true` or `#publish` and they appear in your Hugo content directory. Remove the tag and they disappear. You handle Git commits and pushes when ready.
 
 ## 🌟 Features
 
@@ -289,14 +292,3 @@ Target performance metrics:
 ## 📜 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Obsidian](https://obsidian.md/) for the amazing note-taking experience
-- [Hugo](https://gohugo.io/) for the powerful static site generator
-- [Lotus Docs](https://lotusdocs.dev/) for the beautiful documentation theme
-- The Go community for excellent libraries and tools
-
----
-
-**Made with ❤️ for the Obsidian and Hugo communities** 
