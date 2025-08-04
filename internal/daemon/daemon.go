@@ -416,10 +416,25 @@ func (d *Daemon) removeNoteImageReferences(note *vault.Note) {
 
 func (d *Daemon) ensureSectionIndex(notePath string) error {
 	dir := filepath.Dir(notePath)
-	if dir == d.config.ContentDir {
-		return nil // Root level, no index needed
+	
+	// Create index files for all directories in the path (excluding content root)
+	return d.ensureAllSectionIndexes(dir)
+}
+
+// ensureAllSectionIndexes recursively creates _index.md files for all directories in a path
+func (d *Daemon) ensureAllSectionIndexes(dir string) error {
+	// Stop at content directory root
+	if dir == d.config.ContentDir || dir == "." || dir == "/" {
+		return nil
 	}
 	
+	// Recursively ensure parent directories have indexes first
+	parentDir := filepath.Dir(dir)
+	if err := d.ensureAllSectionIndexes(parentDir); err != nil {
+		return err
+	}
+	
+	// Create index for current directory
 	indexPath := filepath.Join(dir, "_index.md")
 	fullIndexPath := filepath.Join(d.config.Repo, indexPath)
 	
@@ -439,6 +454,7 @@ func (d *Daemon) ensureSectionIndex(notePath string) error {
 			if err := os.WriteFile(fullIndexPath, []byte(indexContent.Serialize()), 0644); err != nil {
 				return fmt.Errorf("creating section index: %w", err)
 			}
+			slog.Info("Created section index", "path", indexPath)
 		}
 	}
 	
