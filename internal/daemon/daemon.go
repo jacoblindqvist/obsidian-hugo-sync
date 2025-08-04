@@ -122,6 +122,8 @@ func (d *Daemon) handleFileEvent(event watcher.Event) error {
 
 	switch event.Operation {
 	case watcher.Create, watcher.Write:
+		// Add small delay to let Obsidian finish writing
+		time.Sleep(100 * time.Millisecond)
 		_, err := d.processNote(event.Path)
 		return err
 	case watcher.Remove:
